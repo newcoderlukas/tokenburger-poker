@@ -1,0 +1,28 @@
+{
+  "name": "tokenburger-poker",
+  "version": "1.0.0",
+  "description": "Tokenburger Kameraden - Online Poker für Freunde (Texas Hold'em, ohne Geldeinsatz)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "deploy": "node deploy.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "basic-ftp": "^5.0.5"
+  },
+  "keywords": [
+    "poker",
+    "texas-holdem",
+    "multiplayer"
+  ],
+  "author": "Tokenburger Kameraden",
+  "license": "MIT"
+}
