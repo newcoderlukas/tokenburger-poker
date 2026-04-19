@@ -176,6 +176,20 @@ function addPlayer(room, persistentId, socketId, name) {
   // Reconnect path: same persistent id already in room
   const existing = persistentId ? room.players.find(p => p.id === persistentId) : null;
   if (existing) {
+    // Collision detection: if the existing player's old socket is still live
+    // AND this is a different socket, this isn't really a reconnect — it's a
+    // second tab / second device trying to join with the same pid (because
+    // localStorage was shared). Treat as a FRESH join with a unique internal id
+    // so both clients get their own player.
+    const oldSocketAlive =
+      existing.socketId &&
+      existing.socketId !== socketId &&
+      io.sockets.sockets.has(existing.socketId);
+    if (oldSocketAlive) {
+      // Fall through to fresh-join path with a derived unique id
+      const uniqueId = persistentId + '_' + Math.random().toString(36).slice(2, 7);
+      return addFreshPlayer(room, uniqueId, socketId, name);
+    }
     existing.socketId = socketId;
     existing.disconnected = false;
     existing.left = false;
@@ -188,7 +202,10 @@ function addPlayer(room, persistentId, socketId, name) {
     return { player: existing, reconnect: true };
   }
 
-  // Fresh join
+  return addFreshPlayer(room, persistentId, socketId, name);
+}
+
+function addFreshPlayer(room, persistentId, socketId, name) {
   const active = room.players.filter(p => !p.left);
   if (active.length >= 7) return { error: 'Raum ist voll (max. 7 Spieler)' };
   if (active.some(p => p.name.toLowerCase() === (name || '').toLowerCase())) {
@@ -212,7 +229,7 @@ function addPlayer(room, persistentId, socketId, name) {
   room.players.push(player);
   socketToRoom.set(socketId, room.code);
   socketToPid.set(socketId, persistentId);
-  return { player };
+  return { player, assignedId: persistentId };
 }
 
 function findBySocket(socketId) {
@@ -773,7 +790,7 @@ io.on('connection', (socket) => {
     const room = createRoom(pid, socket.id, name, { startCoins: sc, smallBlind: sb, bigBlind: bb });
     socket.join(room.code);
     logRoom(room, `${name} hat den Raum erstellt.`);
-    if (cb) cb({ ok: true, code: room.code });
+    if (cb) cb({ ok: true, code: room.code, assignedId: pid });
     broadcastState(room);
   });
 
@@ -792,7 +809,11 @@ io.on('connection', (socket) => {
     } else {
       logRoom(room, `${name} ist dem Raum beigetreten.`);
     }
-    if (cb) cb({ ok: true, code: room.code, reconnect: !!res.reconnect });
+    // assignedId = the pid the server actually stored for this player. It may
+    // differ from what the client sent if we detected a tab/pid collision and
+    // fell through to a fresh join with a derived id.
+    const assignedId = res.player ? res.player.id : pid;
+    if (cb) cb({ ok: true, code: room.code, reconnect: !!res.reconnect, assignedId });
     broadcastState(room);
   });
 
