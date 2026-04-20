@@ -79,6 +79,10 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     $(`tab-${tab.dataset.tab}`).classList.add('active');
+    // When switching tabs, start/stop the live lobby subscription so we only
+    // receive lobbyUpdate events while that tab is actually visible.
+    if (tab.dataset.tab === 'join') openLobby();
+    else closeLobby();
   });
 });
 
@@ -339,6 +343,130 @@ function updateTimerVisual(secs) {
 // ============================================================
 // Login actions
 // ============================================================
+// ============================================================
+// Visibility toggle (create tab)
+// ============================================================
+let selectedVisibility = 'private';
+document.querySelectorAll('.vis-option').forEach(opt => {
+  opt.addEventListener('click', () => {
+    document.querySelectorAll('.vis-option').forEach(o => {
+      o.classList.remove('active');
+      o.setAttribute('aria-pressed', 'false');
+    });
+    opt.classList.add('active');
+    opt.setAttribute('aria-pressed', 'true');
+    selectedVisibility = opt.dataset.visibility || 'private';
+  });
+});
+
+// ============================================================
+// Lobby (showroom of public rooms)
+// ============================================================
+let lobbyActive = false;
+function openLobby() {
+  if (lobbyActive) return;
+  lobbyActive = true;
+  socket.emit('joinLobby', {}, (res) => {
+    if (res && res.ok && res.rooms) renderLobby(res.rooms);
+  });
+}
+function closeLobby() {
+  if (!lobbyActive) return;
+  lobbyActive = false;
+  socket.emit('leaveLobby');
+}
+
+socket.on('lobbyUpdate', ({ rooms }) => {
+  if (!lobbyActive) return;
+  renderLobby(rooms || []);
+});
+
+function renderLobby(rooms) {
+  const list = $('lobby-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!rooms || rooms.length === 0) {
+    list.appendChild(el('div', {
+      class: 'lobby-empty',
+      text: 'Keine offenen Räume. Ein Freund kann einen erstellen — oder tritt mit Code bei.'
+    }));
+    return;
+  }
+  for (const r of rooms) {
+    const card = el('div', { class: 'lobby-card' });
+    card.dataset.code = r.code;
+
+    const head = el('div', { class: 'lobby-card-head' });
+    head.appendChild(el('span', { class: 'lobby-card-code', text: r.code }));
+    const stateTag = el('span', { class: 'lobby-card-state' });
+    if (r.state === 'WAITING') { stateTag.textContent = 'Warteraum'; stateTag.classList.add('is-waiting'); }
+    else if (r.state === 'SHOWDOWN') { stateTag.textContent = 'Showdown'; stateTag.classList.add('is-live'); }
+    else { stateTag.textContent = 'Läuft'; stateTag.classList.add('is-live'); }
+    head.appendChild(stateTag);
+    card.appendChild(head);
+
+    const meta = el('div', { class: 'lobby-card-meta' });
+    meta.appendChild(el('span', { class: 'lobby-card-host', text: '👑 ' + (r.hostName || '—') }));
+    const playerCount = el('span', { class: 'lobby-card-players' });
+    playerCount.textContent = `👥 ${r.playerCount}/${r.maxPlayers || 7}`;
+    meta.appendChild(playerCount);
+    card.appendChild(meta);
+
+    const blinds = el('div', { class: 'lobby-card-blinds' });
+    blinds.textContent = `Blinds ${r.smallBlind}/${r.bigBlind} · Start ${r.startCoins} 💰 · Hand ${r.handNumber || 0}`;
+    card.appendChild(blinds);
+
+    const isFull = r.playerCount >= (r.maxPlayers || 7);
+    const joinBtn = el('button', {
+      class: 'btn btn-primary lobby-join-btn',
+      text: isFull ? 'Voll' : '🚪 Beitreten'
+    });
+    if (isFull) joinBtn.disabled = true;
+    joinBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      directJoin(r.code);
+    });
+    card.appendChild(joinBtn);
+
+    card.addEventListener('click', () => {
+      if (!isFull) directJoin(r.code);
+    });
+    list.appendChild(card);
+  }
+}
+
+function directJoin(code) {
+  const name = $('input-name').value.trim();
+  if (!name) return toast('Bitte zuerst Namen eingeben', 'error');
+  myName = name;
+  localStorage.setItem('tk_name', name);
+  socket.emit('joinRoom', { name, code, persistentId }, (res) => {
+    if (res.error) return toast(res.error, 'error');
+    myRoom = res.code;
+    if (res.assignedId && res.assignedId !== persistentId) {
+      persistentId = res.assignedId;
+      sessionStorage.setItem('tk_pid', persistentId);
+    }
+    localStorage.setItem('tk_room', res.code);
+    closeLobby();
+    toast(res.reconnect ? 'Zurück im Spiel' : 'Beigetreten', 'success');
+    showScreen('screen-game');
+    sounds.turn();
+  });
+}
+
+const btnLobbyRefresh = $('btn-lobby-refresh');
+if (btnLobbyRefresh) {
+  btnLobbyRefresh.addEventListener('click', () => {
+    socket.emit('listPublicRooms', {}, (res) => {
+      if (res && res.rooms) {
+        renderLobby(res.rooms);
+        toast('Aktualisiert', 'success');
+      }
+    });
+  });
+}
+
 $('btn-create').addEventListener('click', () => {
   const name = $('input-name').value.trim();
   if (!name) return toast('Bitte Namen eingeben', 'error');
@@ -347,7 +475,8 @@ $('btn-create').addEventListener('click', () => {
   const startCoins = parseInt($('input-startcoins').value, 10) || 200;
   const smallBlind = parseInt($('input-sb').value, 10) || 5;
   const bigBlind = parseInt($('input-bb').value, 10) || 10;
-  socket.emit('createRoom', { name, startCoins, smallBlind, bigBlind, persistentId }, (res) => {
+  const visibility = selectedVisibility === 'public' ? 'public' : 'private';
+  socket.emit('createRoom', { name, startCoins, smallBlind, bigBlind, persistentId, visibility }, (res) => {
     if (res.error) return toast(res.error, 'error');
     myRoom = res.code;
     if (res.assignedId && res.assignedId !== persistentId) {
@@ -355,7 +484,9 @@ $('btn-create').addEventListener('click', () => {
       sessionStorage.setItem('tk_pid', persistentId);
     }
     localStorage.setItem('tk_room', res.code);
-    toast(`Raum erstellt: ${res.code}`, 'success');
+    closeLobby();
+    const visLabel = visibility === 'public' ? '🌍 offen' : '🔒 privat';
+    toast(`Raum erstellt: ${res.code} (${visLabel})`, 'success');
     showScreen('screen-game');
     sounds.turn();
   });
@@ -491,13 +622,84 @@ $('chat-form').addEventListener('submit', (e) => {
 });
 
 socket.on('chat', ({ name, text }) => {
+  // Push to drawer list (kept as a full history)
   const list = $('chat-list');
   const msg = el('div', { class: 'chat-msg' });
   msg.appendChild(el('strong', { text: name + ': ' }));
   msg.appendChild(document.createTextNode(text));
   list.appendChild(msg);
   list.scrollTop = list.scrollHeight;
+  // Mirror to always-visible live chat
+  addLiveChatMessage(name, text);
 });
+
+// ============================================================
+// Always-visible live chat (on game screen)
+// ============================================================
+const LIVE_CHAT_MAX = 40;
+let liveChatUnread = 0;
+let liveChatCollapsed = localStorage.getItem('tk_chat_collapsed') === '1';
+
+function setLiveChatCollapsed(collapsed) {
+  liveChatCollapsed = collapsed;
+  const wrap = $('live-chat');
+  const btn = $('live-chat-toggle');
+  if (!wrap || !btn) return;
+  wrap.classList.toggle('collapsed', collapsed);
+  btn.setAttribute('aria-expanded', String(!collapsed));
+  localStorage.setItem('tk_chat_collapsed', collapsed ? '1' : '0');
+  if (!collapsed) { liveChatUnread = 0; updateLiveChatUnread(); }
+}
+function updateLiveChatUnread() {
+  const b = $('live-chat-unread');
+  if (!b) return;
+  if (liveChatUnread <= 0) { b.classList.add('hidden'); b.textContent = '0'; }
+  else { b.classList.remove('hidden'); b.textContent = String(Math.min(99, liveChatUnread)); }
+}
+
+function addLiveChatMessage(name, text, meta = {}) {
+  const list = $('live-chat-messages');
+  if (!list) return;
+  const row = el('div', { class: 'lc-msg' });
+  if (meta.system) row.classList.add('lc-msg-system');
+  if (state && state.youId) {
+    const me = (state.players || []).find(p => p.id === state.youId);
+    if (me && name === me.name) row.classList.add('lc-msg-me');
+  }
+  row.appendChild(el('span', { class: 'lc-name', text: name }));
+  row.appendChild(el('span', { class: 'lc-text', text: text }));
+  list.appendChild(row);
+  // Cap history
+  while (list.children.length > LIVE_CHAT_MAX) list.firstChild.remove();
+  // Scroll to bottom
+  list.scrollTop = list.scrollHeight;
+  if (liveChatCollapsed) { liveChatUnread++; updateLiveChatUnread(); }
+}
+
+const liveChatForm = $('live-chat-form');
+if (liveChatForm) {
+  liveChatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('live-chat-input');
+    const text = (input.value || '').trim();
+    if (!text) return;
+    socket.emit('chat', { text });
+    input.value = '';
+  });
+}
+document.querySelectorAll('.lc-emote').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const text = btn.dataset.emote;
+    if (text) socket.emit('chat', { text });
+  });
+});
+const liveChatToggle = $('live-chat-toggle');
+if (liveChatToggle) {
+  liveChatToggle.addEventListener('click', () => setLiveChatCollapsed(!liveChatCollapsed));
+}
+// Apply initial collapsed state AFTER the DOM is ready
+setLiveChatCollapsed(liveChatCollapsed);
+updateLiveChatUnread();
 
 // ============================================================
 // Card rendering
@@ -604,6 +806,11 @@ function render() {
   $('room-code').textContent = state.code || '—';
   $('hand-state').textContent = STATE_NAMES[state.state] || state.state;
   $('hand-num').textContent = state.handNumber || '0';
+  const blindsChip = $('blinds-chip');
+  if (blindsChip) {
+    blindsChip.textContent = `${state.smallBlind || '—'}/${state.bigBlind || '—'}`;
+    blindsChip.title = `Small Blind ${state.smallBlind} · Big Blind ${state.bigBlind}`;
+  }
 
   // Pot (with bump)
   bumpCounter($('pot-amount'), state.pot || 0);
@@ -652,18 +859,17 @@ function render() {
   renderDrawer(me);
 }
 
+let _lastRenderedCommunityKey = null;
 function renderCommunity() {
   const cc = $('community-cards');
-  // Smart update: rebuild if either the count OR the actual card values change.
-  // (Card values matter for the hand-to-hand transition where 5->0 change is
-  // naturally detected by count, but a same-count swap on showdown could also
-  // leave stale visuals.)
+  // Smart update: rebuild if the hand number changes OR the actual cards change.
+  // Using an authoritative memo (not reading the DOM) to avoid any chance that
+  // stale dataset attributes from a prior render survive through a new hand.
+  const handNum = state && typeof state.handNumber === 'number' ? state.handNumber : 0;
   const want = state.communityCards || [];
-  const existingKey = Array.from(cc.querySelectorAll('.card:not(.placeholder)'))
-    .map(n => n.dataset.card || '')
-    .join(',');
-  const wantKey = want.join(',');
-  if (existingKey !== wantKey) {
+  const wantKey = `${handNum}|${state.state}|${want.join(',')}`;
+  if (wantKey !== _lastRenderedCommunityKey) {
+    _lastRenderedCommunityKey = wantKey;
     cc.innerHTML = '';
     for (const card of want) {
       const c = cardEl(card);
@@ -688,27 +894,50 @@ function renderCommunity() {
   }
 }
 
+// Authoritative client-side memo of what we last rendered in #you-cards.
+// We don't trust the DOM for comparisons — dataset attributes can drift if
+// something else in the code path mutates them, plus reading the DOM is just
+// more fragile than a plain JS variable.
+let _lastRenderedYouKey = null;   // "handNumber|card1,card2" — any change forces rebuild
+let _lastRenderedYouId  = null;   // your player id at last render
+let _lastRenderedHand   = -1;     // last handNumber we saw
+
 function renderYourCards(me) {
   const yc = $('you-cards');
-  // Compare actual card values (not just count) so a NEW hand with 2 new cards
-  // causes a rebuild even though the count is still 2.
-  const existingCardsKey = Array.from(yc.querySelectorAll('.card'))
-    .map(n => n.dataset.card || '')
-    .join(',');
-  const wantCards = me && me.cards ? me.cards : [];
-  const wantKey = wantCards.join(',');
-  if (existingCardsKey !== wantKey || !me) {
+  if (!yc) return;
+
+  const handNum  = state && typeof state.handNumber === 'number' ? state.handNumber : 0;
+  const stageKey = state && state.state ? state.state : '';
+  const cards    = (me && Array.isArray(me.cards)) ? me.cards : [];
+  // Include handNumber + youId + state so ANY transition that should show new
+  // cards (new hand, rejoin as different player, new stage) invalidates.
+  const wantKey  = `${handNum}|${state ? state.youId : ''}|${stageKey}|${cards.join(',')}`;
+
+  // Extra safety: if the hand number has advanced, ALWAYS rebuild regardless
+  // of anything else. This is the belt-and-braces guarantee that a new hand
+  // cannot show stale cards from the last hand.
+  const handAdvanced = handNum > _lastRenderedHand;
+  const youChanged   = state && state.youId !== _lastRenderedYouId;
+
+  if (wantKey !== _lastRenderedYouKey || handAdvanced || youChanged) {
+    // Full rebuild — cards + tag area — so state labels can't leak either.
     yc.innerHTML = '';
-    if (me && wantCards.length) {
-      for (const c of wantCards) {
+    if (me && cards.length) {
+      for (const c of cards) {
         const node = cardEl(c);
         node.dataset.card = c;
         yc.appendChild(node);
       }
     }
+    _lastRenderedYouKey = wantKey;
+    _lastRenderedHand   = handNum;
+    _lastRenderedYouId  = state ? state.youId : null;
+  } else {
+    // Even when we skip the cards rebuild, we still refresh the mutable tags
+    // (bet / fold / all-in) so they stay in sync with mid-hand changes.
+    yc.querySelectorAll('.player-action-tag, .player-bet').forEach(n => n.remove());
   }
-  // State tag
-  yc.querySelectorAll('.player-action-tag, .player-bet').forEach(n => n.remove());
+
   if (me) {
     if (me.folded) {
       const tag = el('div', { class: 'player-action-tag', text: 'GEFOLDET' });
@@ -740,6 +969,16 @@ function renderSeat(grid, p) {
   if (state.state === 'SHOWDOWN' && state.showdownData && state.showdownData.pots) {
     const isWinner = state.showdownData.pots.some(pot => pot.winners.some(w => w.id === p.id));
     if (isWinner) seat.classList.add('winner');
+  }
+
+  // Position badges (D / SB / BB) during an active hand
+  const inLiveHand = state.state !== 'WAITING';
+  if (inLiveHand) {
+    const badges = el('div', { class: 'position-badges' });
+    if (idxOfP === state.dealerIdx) badges.appendChild(el('span', { class: 'pos-badge pos-d', text: 'D', attrs: { title: 'Dealer' } }));
+    if (idxOfP === state.sbIdx) badges.appendChild(el('span', { class: 'pos-badge pos-sb', text: 'SB', attrs: { title: 'Small Blind' } }));
+    if (idxOfP === state.bbIdx) badges.appendChild(el('span', { class: 'pos-badge pos-bb', text: 'BB', attrs: { title: 'Big Blind' } }));
+    if (badges.children.length) seat.appendChild(badges);
   }
 
   seat.appendChild(el('div', { class: 'player-name', text: p.name + (p.left ? ' (weg)' : '') + (p.disconnected ? ' 🔌' : '') }));
@@ -829,18 +1068,22 @@ function renderActionPanel(me) {
     : '✨ Du bist dran';
 
   // Fold
-  const btnFold = el('button', { class: 'btn btn-fold', text: 'Fold' });
+  const btnFold = el('button', { class: 'btn btn-fold', text: 'Fold', attrs: { 'data-shortcut': 'F' } });
   btnFold.addEventListener('click', () => doAction('fold'));
   buttons.appendChild(btnFold);
 
   // Check/Call
   if (toCall <= 0) {
-    const b = el('button', { class: 'btn btn-check', text: 'Check' });
+    const b = el('button', { class: 'btn btn-check', text: 'Check', attrs: { 'data-shortcut': 'C' } });
     b.addEventListener('click', () => doAction('check'));
     buttons.appendChild(b);
   } else {
     const canCover = me.coins >= toCall;
-    const b = el('button', { class: 'btn btn-call', text: canCover ? `Call ${toCall}` : `Call All-In (${me.coins})` });
+    const b = el('button', {
+      class: 'btn btn-call',
+      text: canCover ? `Call ${toCall}` : `Call All-In (${me.coins})`,
+      attrs: { 'data-shortcut': 'C' }
+    });
     b.addEventListener('click', () => doAction('call'));
     buttons.appendChild(b);
   }
@@ -850,11 +1093,15 @@ function renderActionPanel(me) {
   const canRaise = me.coins > toCall && me.coins + me.bet >= minRaiseTotal;
   if (canRaise) {
     const raiseLabel = state.currentBet === 0 ? 'Bet' : 'Raise';
-    const b = el('button', { class: 'btn btn-raise', text: raiseLabel });
+    const b = el('button', { class: 'btn btn-raise', text: raiseLabel, attrs: { 'data-shortcut': 'R' } });
     b.addEventListener('click', () => openRaise(me));
     buttons.appendChild(b);
   } else if (me.coins > 0) {
-    const b = el('button', { class: 'btn btn-allin', text: `All-In (${me.coins + me.bet})` });
+    const b = el('button', {
+      class: 'btn btn-allin',
+      text: `All-In (${me.coins + me.bet})`,
+      attrs: { 'data-shortcut': 'A' }
+    });
     b.addEventListener('click', () => doAction('allin'));
     buttons.appendChild(b);
   }
@@ -915,6 +1162,52 @@ function doAction(action, amount) {
     if (res && res.error) toast(res.error, 'error');
   });
 }
+
+// ============================================================
+// Keyboard shortcuts for in-hand actions
+//   F = Fold    C = Check/Call    R = Raise    A = All-in
+//   Enter = confirm raise, Esc = cancel raise
+// Shortcuts are ignored when typing into inputs.
+// ============================================================
+document.addEventListener('keydown', (e) => {
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (!state || !state.youId) return;
+  const me = state.players.find(p => p.id === state.youId);
+  if (!me) return;
+  const idxOfMe = state.players.findIndex(p => p.id === me.id);
+  const myTurn = idxOfMe === state.currentPlayerIdx;
+
+  const raisePanelOpen = $('raise-panel') && !$('raise-panel').classList.contains('hidden');
+  if (raisePanelOpen) {
+    if (e.key === 'Enter') { e.preventDefault(); $('raise-confirm').click(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); $('raise-cancel').click(); return; }
+  }
+
+  // Host/global: Space = start hand (WAITING/SHOWDOWN)
+  if ((e.key === ' ' || e.key === 'Enter') && (state.state === 'WAITING' || state.state === 'SHOWDOWN') && me.id === state.hostId) {
+    e.preventDefault();
+    socket.emit('startHand');
+    return;
+  }
+
+  if (!myTurn || state.state === 'WAITING' || state.state === 'SHOWDOWN') return;
+  const toCall = state.currentBet - me.bet;
+  const key = e.key.toLowerCase();
+
+  if (key === 'f') { e.preventDefault(); doAction('fold'); }
+  else if (key === 'c') {
+    e.preventDefault();
+    if (toCall <= 0) doAction('check');
+    else doAction('call');
+  } else if (key === 'r') {
+    e.preventDefault();
+    if (me.coins > toCall) openRaise(me);
+  } else if (key === 'a') {
+    e.preventDefault();
+    if (me.coins > 0) doAction('allin');
+  }
+});
 
 // ============================================================
 // Showdown

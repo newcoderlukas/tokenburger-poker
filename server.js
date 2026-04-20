@@ -10,10 +10,43 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-app.use(express.static(path.join(__dirname, 'public')));
+// Cache-busting: server start time becomes the asset version. Every redeploy
+// on Infomaniak restarts the process, which bumps this and forces browsers to
+// refetch /client.js and /style.css.
+const ASSET_VERSION = Date.now().toString(36);
+
+const fs = require('fs');
+// Serve index.html with a live-injected asset version so browsers always load
+// the matching script/style after a deploy.
+const INDEX_PATH = path.join(__dirname, 'public', 'index.html');
+app.get(['/', '/index.html'], (req, res) => {
+  fs.readFile(INDEX_PATH, 'utf8', (err, html) => {
+    if (err) { res.status(500).send('index not found'); return; }
+    const out = html
+      .replace('href="/style.css"', `href="/style.css?v=${ASSET_VERSION}"`)
+      .replace('src="/client.js"',  `src="/client.js?v=${ASSET_VERSION}"`);
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.set('Expires', '0');
+    res.set('Pragma', 'no-cache');
+    res.type('html').send(out);
+  });
+});
+
+// Serve other static assets normally, but keep them revalidated often.
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: true,
+  lastModified: true,
+  maxAge: 0,
+  setHeaders(res, p) {
+    // JS/CSS get a strong revalidation header; everything else can be cached.
+    if (/\.(js|css)$/i.test(p)) {
+      res.set('Cache-Control', 'no-cache, must-revalidate');
+    }
+  },
+}));
 
 // Health check
-app.get('/health', (_, res) => res.json({ ok: true, rooms: rooms.size }));
+app.get('/health', (_, res) => res.json({ ok: true, rooms: rooms.size, version: ASSET_VERSION }));
 
 const PORT = process.env.PORT || 3000;
 
@@ -145,9 +178,11 @@ function generateRoomCode() {
 
 function createRoom(hostPid, hostSocketId, hostName, config = {}) {
   const code = generateRoomCode();
+  const visibility = config.visibility === 'public' ? 'public' : 'private';
   const room = {
     code,
     hostId: hostPid,
+    visibility,
     players: [],
     state: 'WAITING',
     deck: [],
@@ -170,6 +205,45 @@ function createRoom(hostPid, hostSocketId, hostName, config = {}) {
   rooms.set(code, room);
   addPlayer(room, hostPid, hostSocketId, hostName);
   return room;
+}
+
+// ---- Lobby helpers --------------------------------------------------------
+const LOBBY_ROOM = 'lobby';
+const MAX_PLAYERS_PER_ROOM = 7;
+
+function roomSummary(room) {
+  const host = room.players.find(p => p.id === room.hostId);
+  const activePlayers = room.players.filter(p => !p.left);
+  return {
+    code: room.code,
+    hostName: host ? host.name : '—',
+    playerCount: activePlayers.length,
+    maxPlayers: MAX_PLAYERS_PER_ROOM,
+    state: room.state,
+    handNumber: room.handNumber,
+    smallBlind: room.smallBlind,
+    bigBlind: room.bigBlind,
+    startCoins: room.startCoins,
+    createdAt: room.createdAt,
+  };
+}
+
+function listPublicRooms() {
+  const list = [];
+  for (const room of rooms.values()) {
+    if (room.visibility !== 'public') continue;
+    const active = room.players.filter(p => !p.left);
+    if (active.length === 0) continue;
+    list.push(roomSummary(room));
+  }
+  // Most recent first
+  list.sort((a, b) => b.createdAt - a.createdAt);
+  return list;
+}
+
+function broadcastLobby() {
+  // Emit to everyone viewing the join tab (they're in the LOBBY_ROOM).
+  io.to(LOBBY_ROOM).emit('lobbyUpdate', { rooms: listPublicRooms() });
 }
 
 function addPlayer(room, persistentId, socketId, name) {
@@ -279,12 +353,15 @@ function scheduleRemoval(room, player) {
       }
     }
 
+    const wasPublic = room.visibility === 'public';
     if (room.players.length === 0) {
       rooms.delete(room.code);
+      if (wasPublic) broadcastLobby();
       return;
     }
 
     broadcastState(room);
+    if (wasPublic) broadcastLobby();
   }, DISCONNECT_GRACE_MS);
 }
 
@@ -297,6 +374,7 @@ function handleDisconnect(socketId) {
   logRoom(room, `${player.name} hat die Verbindung verloren (warte ${DISCONNECT_GRACE_MS / 1000}s auf Reconnect).`);
   scheduleRemoval(room, player);
   broadcastState(room);
+  if (room.visibility === 'public') broadcastLobby();
 }
 
 function forceLeave(room, player) {
@@ -331,11 +409,14 @@ function forceLeave(room, player) {
     }
   }
 
+  const wasPublic = room.visibility === 'public';
   if (room.players.length === 0) {
     rooms.delete(room.code);
+    if (wasPublic) broadcastLobby();
     return;
   }
   broadcastState(room);
+  if (wasPublic) broadcastLobby();
 }
 
 function logRoom(room, text) {
@@ -393,6 +474,8 @@ function startHand(room) {
 
   takeBet(room.players[sbIdx], room.smallBlind);
   takeBet(room.players[bbIdx], room.bigBlind);
+  room.sbIdx = sbIdx;
+  room.bbIdx = bbIdx;
   room.currentBet = room.bigBlind;
   logRoom(room, `Neue Runde! SB ${room.smallBlind} von ${room.players[sbIdx].name}, BB ${room.bigBlind} von ${room.players[bbIdx].name}.`);
 
@@ -755,6 +838,8 @@ function broadcastState(room) {
     startCoins: room.startCoins,
     customStartCoins: room.customStartCoins,
     dealerIdx: room.dealerIdx,
+    sbIdx: typeof room.sbIdx === 'number' ? room.sbIdx : -1,
+    bbIdx: typeof room.bbIdx === 'number' ? room.bbIdx : -1,
     currentPlayerIdx: room.currentPlayerIdx,
     communityCards: room.communityCards,
     showdownData: room.showdownData,
@@ -780,18 +865,32 @@ io.on('connection', (socket) => {
   const handshakePid = auth.persistentId;
   console.log('connected', socket.id, handshakePid ? `[pid:${handshakePid.slice(0,8)}]` : '');
 
-  socket.on('createRoom', ({ name, startCoins, smallBlind, bigBlind, persistentId }, cb) => {
+  socket.on('createRoom', ({ name, startCoins, smallBlind, bigBlind, persistentId, visibility }, cb) => {
     name = (name || '').trim().substring(0, 20);
     const pid = persistentId || handshakePid || ('s_' + socket.id);
     if (!name) return cb && cb({ error: 'Name fehlt' });
     const sc = Math.max(10, Math.min(100000, Number(startCoins) || 200));
     const sb = Math.max(1, Math.min(1000, Number(smallBlind) || 5));
     const bb = Math.max(sb + 1, Math.min(2000, Number(bigBlind) || sb * 2));
-    const room = createRoom(pid, socket.id, name, { startCoins: sc, smallBlind: sb, bigBlind: bb });
+    const vis = visibility === 'public' ? 'public' : 'private';
+    const room = createRoom(pid, socket.id, name, { startCoins: sc, smallBlind: sb, bigBlind: bb, visibility: vis });
     socket.join(room.code);
-    logRoom(room, `${name} hat den Raum erstellt.`);
-    if (cb) cb({ ok: true, code: room.code, assignedId: pid });
+    logRoom(room, `${name} hat den Raum erstellt (${vis === 'public' ? 'öffentlich' : 'privat'}).`);
+    if (cb) cb({ ok: true, code: room.code, assignedId: pid, visibility: room.visibility });
     broadcastState(room);
+    if (room.visibility === 'public') broadcastLobby();
+  });
+
+  // Lobby — list of open public rooms, with live updates.
+  socket.on('joinLobby', (_, cb) => {
+    socket.join(LOBBY_ROOM);
+    if (cb) cb({ ok: true, rooms: listPublicRooms() });
+  });
+  socket.on('leaveLobby', () => {
+    socket.leave(LOBBY_ROOM);
+  });
+  socket.on('listPublicRooms', (_, cb) => {
+    if (cb) cb({ rooms: listPublicRooms() });
   });
 
   socket.on('joinRoom', ({ name, code, persistentId }, cb) => {
@@ -815,6 +914,7 @@ io.on('connection', (socket) => {
     const assignedId = res.player ? res.player.id : pid;
     if (cb) cb({ ok: true, code: room.code, reconnect: !!res.reconnect, assignedId });
     broadcastState(room);
+    if (room.visibility === 'public') broadcastLobby();
   });
 
   // Soft reconnect (client re-entering game screen on page load)
@@ -934,13 +1034,19 @@ io.on('connection', (socket) => {
 // ============================================================
 setInterval(() => {
   const now = Date.now();
+  let publicChanged = false;
   for (const [code, room] of rooms) {
-    if (room.players.length === 0) rooms.delete(code);
-    else if (now - room.createdAt > 12 * 3600 * 1000 && room.players.every(p => p.disconnected || p.left)) {
+    const wasPublic = room.visibility === 'public';
+    if (room.players.length === 0) {
       rooms.delete(code);
+      if (wasPublic) publicChanged = true;
+    } else if (now - room.createdAt > 12 * 3600 * 1000 && room.players.every(p => p.disconnected || p.left)) {
+      rooms.delete(code);
+      if (wasPublic) publicChanged = true;
       console.log(`Cleaned up stale room ${code}`);
     }
   }
+  if (publicChanged) broadcastLobby();
 }, 60 * 1000);
 
 // ============================================================

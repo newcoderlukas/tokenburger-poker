@@ -54,10 +54,35 @@
             <input id="input-bb" type="number" value="10" min="2" />
           </label>
         </div>
+        <div class="field">
+          <span>Sichtbarkeit</span>
+          <div class="visibility-toggle" role="radiogroup" aria-label="Sichtbarkeit">
+            <button type="button" class="vis-option active" data-visibility="private" aria-pressed="true">
+              <span class="vis-icon">🔒</span>
+              <span class="vis-label">Privat</span>
+              <span class="vis-sub">Nur mit Code</span>
+            </button>
+            <button type="button" class="vis-option" data-visibility="public" aria-pressed="false">
+              <span class="vis-icon">🌍</span>
+              <span class="vis-label">Offen</span>
+              <span class="vis-sub">In der Lobby sichtbar</span>
+            </button>
+          </div>
+        </div>
         <button id="btn-create" class="btn btn-primary shine">Raum erstellen</button>
       </div>
 
       <div id="tab-join" class="tab-pane">
+        <div class="lobby-section">
+          <div class="lobby-header">
+            <span class="lobby-title">Offene Räume</span>
+            <button id="btn-lobby-refresh" class="btn-ghost" title="Aktualisieren">↻</button>
+          </div>
+          <div id="lobby-list" class="lobby-list">
+            <div class="lobby-empty">Keine offenen Räume. Ein Freund kann einen erstellen — oder tritt mit Code bei.</div>
+          </div>
+        </div>
+        <div class="lobby-divider"><span>oder mit Code</span></div>
         <label class="field">
           <span>Raum-Code</span>
           <input id="input-code" type="text" maxlength="4" placeholder="z.B. A3F9" autocomplete="off" class="code-input" />
@@ -80,6 +105,7 @@
       <div class="topbar-center">
         <span id="hand-state" class="stage-chip">Warten</span>
         <span>Hand <strong id="hand-num">—</strong></span>
+        <span id="blinds-chip" class="blinds-chip" title="Blinds">—/—</span>
       </div>
       <div class="topbar-right">
         <button id="btn-sound" class="btn-ghost" title="Sound">🔊</button>
@@ -110,6 +136,30 @@
 
       <!-- Showdown overlay -->
       <div id="showdown-info" class="showdown-info"></div>
+
+      <!-- Always-visible live chat -->
+      <div id="live-chat" class="live-chat">
+        <button id="live-chat-toggle" class="live-chat-toggle" title="Chat ein-/ausklappen" aria-expanded="true">
+          <span class="lc-icon">💬</span>
+          <span class="lc-label">Chat</span>
+          <span id="live-chat-unread" class="lc-unread hidden">0</span>
+          <span class="lc-chevron">▾</span>
+        </button>
+        <div class="live-chat-body">
+          <div id="live-chat-messages" class="live-chat-messages" aria-live="polite"></div>
+          <form id="live-chat-form" class="live-chat-form" autocomplete="off">
+            <input id="live-chat-input" type="text" placeholder="Nachricht an alle…" maxlength="200" />
+            <button type="submit" class="live-chat-send" aria-label="Senden">➤</button>
+          </form>
+          <div class="live-chat-quick">
+            <button type="button" class="lc-emote" data-emote="👏 GG!">👏 GG</button>
+            <button type="button" class="lc-emote" data-emote="😂 Haha!">😂</button>
+            <button type="button" class="lc-emote" data-emote="🔥 Nice hand!">🔥</button>
+            <button type="button" class="lc-emote" data-emote="🤔 Hmm…">🤔</button>
+            <button type="button" class="lc-emote" data-emote="🍻 Prost!">🍻</button>
+          </div>
+        </div>
+      </div>
     </main>
 
     <!-- You + actions -->
