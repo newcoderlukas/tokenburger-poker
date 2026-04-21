@@ -41,17 +41,17 @@
 
       <div id="tab-create" class="tab-pane active">
         <label class="field">
-          <span>Start-Coins</span>
-          <input id="input-startcoins" type="number" value="200" min="10" max="100000" />
+          <span>Einkauf (CHF)</span>
+          <input id="input-startcoins" type="number" value="50" min="1" max="10000" step="0.50" />
         </label>
         <div class="row">
           <label class="field">
-            <span>Small Blind</span>
-            <input id="input-sb" type="number" value="5" min="1" />
+            <span>Small Blind (CHF)</span>
+            <input id="input-sb" type="number" value="0.20" min="0.05" step="0.05" />
           </label>
           <label class="field">
-            <span>Big Blind</span>
-            <input id="input-bb" type="number" value="10" min="2" />
+            <span>Big Blind (CHF)</span>
+            <input id="input-bb" type="number" value="0.40" min="0.10" step="0.05" />
           </label>
         </div>
         <div class="field">
@@ -90,7 +90,7 @@
         <button id="btn-join" class="btn btn-primary shine">Beitreten</button>
       </div>
 
-      <p class="hint">Alle Spieler starten mit gleichen Coins. Der Host kann jederzeit zwischen den Runden neue Coins verteilen.</p>
+      <p class="hint">Alle Spieler starten mit gleichem Einkauf (CHF). Zwischen den Runden kann der Host jedem neue Beträge zuteilen. Nur zum Spaß — kein echter Geldtransfer.</p>
     </div>
   </section>
 
@@ -124,8 +124,8 @@
       <div class="center-area">
         <div class="pot-display">
           <span class="pot-label">Pot</span>
-          <span id="pot-amount" class="counter">0</span>
-          <span class="pot-chip">💰</span>
+          <span id="pot-amount" class="counter">0.00</span>
+          <span class="pot-currency">CHF</span>
         </div>
         <div id="community-cards" class="community-cards"></div>
         <div id="stage-badge" class="stage-badge"></div>
@@ -169,7 +169,8 @@
           <div class="you-name" id="you-name">—</div>
           <div class="you-coins">
             <span class="coin-icon">💰</span>
-            <span id="you-coins" class="counter">0</span>
+            <span id="you-coins" class="counter">0.00</span>
+            <span class="you-currency">CHF</span>
           </div>
         </div>
         <div id="you-cards" class="you-cards"></div>
@@ -180,8 +181,8 @@
         <div id="action-buttons" class="action-buttons"></div>
         <div id="raise-panel" class="raise-panel hidden">
           <div class="raise-amount-display">
-            <span class="raise-label">Raise auf</span>
-            <span id="raise-display">0</span>
+            <span class="raise-label">Raise auf (CHF)</span>
+            <span id="raise-display">0.00</span>
           </div>
           <input id="raise-slider" type="range" min="0" max="100" step="1" />
           <div class="raise-controls">
@@ -209,7 +210,7 @@
       </div>
 
       <div class="drawer-section">
-        <h4>Spieler & Coins</h4>
+        <h4>Spieler & Guthaben (CHF)</h4>
         <div id="menu-players"></div>
       </div>
 
@@ -218,12 +219,12 @@
         <button id="btn-start-hand" class="btn btn-primary shine">Neue Runde starten</button>
         <div class="row">
           <label class="field">
-            <span>Small Blind</span>
-            <input id="host-sb" type="number" min="1" />
+            <span>Small Blind (CHF)</span>
+            <input id="host-sb" type="number" min="0.05" step="0.05" />
           </label>
           <label class="field">
-            <span>Big Blind</span>
-            <input id="host-bb" type="number" min="2" />
+            <span>Big Blind (CHF)</span>
+            <input id="host-bb" type="number" min="0.10" step="0.05" />
           </label>
         </div>
         <button id="btn-save-blinds" class="btn btn-secondary">Blinds speichern</button>
@@ -264,18 +265,18 @@
   <!-- Coin-adjust modal (host) -->
   <div id="coin-modal" class="modal hidden">
     <div class="modal-card glass">
-      <h3 id="coin-modal-title">Coins anpassen</h3>
+      <h3 id="coin-modal-title">Betrag anpassen</h3>
       <label class="field">
-        <span>Coins setzen auf</span>
-        <input id="coin-set-input" type="number" min="0" />
+        <span>Guthaben setzen auf (CHF)</span>
+        <input id="coin-set-input" type="number" min="0" step="0.05" />
       </label>
       <div class="modal-actions">
         <button id="coin-set-btn" class="btn btn-secondary">Setzen</button>
       </div>
       <hr />
       <label class="field">
-        <span>Coins hinzufügen</span>
-        <input id="coin-add-input" type="number" min="1" />
+        <span>Guthaben hinzufügen (CHF)</span>
+        <input id="coin-add-input" type="number" min="0.05" step="0.05" />
       </label>
       <div class="modal-actions">
         <button id="coin-add-btn" class="btn btn-primary">Hinzufügen</button>

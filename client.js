@@ -40,6 +40,31 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('scroll', updateAppHeight);
 }
 
+// ------------------------------------------------------------
+// Currency formatting
+// ------------------------------------------------------------
+// All amounts are sent from the server in Rappen (integer cents). The UI
+// always shows CHF with 2 decimals. `chf()` returns the formatted number
+// without the currency symbol so it can be composed freely (e.g. "0.40 CHF"
+// or "CHF 50.00" or "CHF 5.40 → Pot"). Use `chfLabel()` when you want the
+// amount with the "CHF" suffix directly.
+function chf(rappen) {
+  const n = Math.round(Number(rappen) || 0);
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  return sign + (abs / 100).toFixed(2);
+}
+function chfLabel(rappen) { return chf(rappen) + ' CHF'; }
+
+// Convert CHF user input (e.g. "0.20", "50", "5,50") to integer Rappen.
+function chfInputToRappen(val) {
+  if (val === null || val === undefined) return NaN;
+  const s = String(val).trim().replace(',', '.');
+  const f = parseFloat(s);
+  if (!Number.isFinite(f)) return NaN;
+  return Math.round(f * 100);
+}
+
 // --- DOM helpers ---
 const $ = (id) => document.getElementById(id);
 const el = (tag, opts = {}) => {
@@ -413,7 +438,7 @@ function renderLobby(rooms) {
     card.appendChild(meta);
 
     const blinds = el('div', { class: 'lobby-card-blinds' });
-    blinds.textContent = `Blinds ${r.smallBlind}/${r.bigBlind} · Start ${r.startCoins} 💰 · Hand ${r.handNumber || 0}`;
+    blinds.textContent = `Blinds ${chf(r.smallBlind)}/${chf(r.bigBlind)} CHF · Einkauf ${chf(r.startCoins)} CHF · Hand ${r.handNumber || 0}`;
     card.appendChild(blinds);
 
     const isFull = r.playerCount >= (r.maxPlayers || 7);
@@ -472,9 +497,16 @@ $('btn-create').addEventListener('click', () => {
   if (!name) return toast('Bitte Namen eingeben', 'error');
   myName = name;
   localStorage.setItem('tk_name', name);
-  const startCoins = parseInt($('input-startcoins').value, 10) || 200;
-  const smallBlind = parseInt($('input-sb').value, 10) || 5;
-  const bigBlind = parseInt($('input-bb').value, 10) || 10;
+  // Inputs are in CHF (e.g. "50", "0.20"). Convert to Rappen for the server.
+  const startCoins = chfInputToRappen($('input-startcoins').value) || 5000;
+  const smallBlind = chfInputToRappen($('input-sb').value) || 20;
+  const bigBlind   = chfInputToRappen($('input-bb').value) || 40;
+  if (smallBlind < 1 || bigBlind < 2 || bigBlind <= smallBlind) {
+    return toast('Blinds ungültig (Big Blind muss größer als Small Blind sein)', 'error');
+  }
+  if (startCoins < 100) {
+    return toast('Einkauf zu klein (min. 1 CHF)', 'error');
+  }
   const visibility = selectedVisibility === 'public' ? 'public' : 'private';
   socket.emit('createRoom', { name, startCoins, smallBlind, bigBlind, persistentId, visibility }, (res) => {
     if (res.error) return toast(res.error, 'error');
@@ -571,11 +603,14 @@ $('btn-start-hand').addEventListener('click', () => {
 });
 
 $('btn-save-blinds').addEventListener('click', () => {
-  const sb = parseInt($('host-sb').value, 10);
-  const bb = parseInt($('host-bb').value, 10);
+  const sb = chfInputToRappen($('host-sb').value);
+  const bb = chfInputToRappen($('host-bb').value);
+  if (!Number.isFinite(sb) || !Number.isFinite(bb) || bb <= sb) {
+    return toast('Ungültige Blinds (BB > SB)', 'error');
+  }
   socket.emit('hostSetBlinds', { smallBlind: sb, bigBlind: bb }, (res) => {
     if (res && res.error) return toast(res.error, 'error');
-    toast('Blinds aktualisiert', 'success');
+    toast(`Blinds: ${chf(sb)}/${chf(bb)} CHF`, 'success');
   });
 });
 
@@ -585,28 +620,29 @@ $('btn-save-blinds').addEventListener('click', () => {
 let coinModalTargetId = null;
 function openCoinModal(playerId, playerName, currentCoins) {
   coinModalTargetId = playerId;
-  $('coin-modal-title').textContent = `Coins: ${playerName}`;
-  $('coin-set-input').value = currentCoins;
-  $('coin-add-input').value = 50;
+  $('coin-modal-title').textContent = `Guthaben: ${playerName}`;
+  // Show current value in CHF so the host can set an absolute number in CHF
+  $('coin-set-input').value = chf(currentCoins);
+  $('coin-add-input').value = '10';  // default "buy-in top-up" = 10 CHF
   $('coin-modal').classList.remove('hidden');
 }
 $('coin-modal-close').addEventListener('click', () => $('coin-modal').classList.add('hidden'));
 $('coin-set-btn').addEventListener('click', () => {
-  const coins = parseInt($('coin-set-input').value, 10);
-  if (isNaN(coins) || coins < 0) return toast('Ungültiger Wert', 'error');
+  const coins = chfInputToRappen($('coin-set-input').value);
+  if (!Number.isFinite(coins) || coins < 0) return toast('Ungültiger Betrag', 'error');
   socket.emit('hostSetCoins', { playerId: coinModalTargetId, coins }, (res) => {
     if (res && res.error) return toast(res.error, 'error');
     $('coin-modal').classList.add('hidden');
-    toast('Coins gesetzt', 'success');
+    toast(`Gesetzt auf ${chfLabel(coins)}`, 'success');
   });
 });
 $('coin-add-btn').addEventListener('click', () => {
-  const amount = parseInt($('coin-add-input').value, 10);
-  if (isNaN(amount) || amount < 1) return toast('Ungültiger Wert', 'error');
+  const amount = chfInputToRappen($('coin-add-input').value);
+  if (!Number.isFinite(amount) || amount < 1) return toast('Ungültiger Betrag', 'error');
   socket.emit('hostGiveCoins', { playerId: coinModalTargetId, amount }, (res) => {
     if (res && res.error) return toast(res.error, 'error');
     $('coin-modal').classList.add('hidden');
-    toast('Coins hinzugefügt', 'success');
+    toast(`+${chfLabel(amount)}`, 'success');
   });
 });
 
@@ -730,6 +766,21 @@ function cardEl(card, opts = {}) {
 socket.on('gameState', (s) => {
   prevState = state;
   state = s;
+  // --- Hard reset card memos on hand boundaries ---
+  // Any time the server reports a new hand (handNumber advanced) we wipe ALL
+  // memos and both card DOM areas so there is *no* way a stale card from the
+  // previous hand can survive into the new one. This is the belt-and-braces
+  // guarantee on top of the key-based diff in renderYourCards/renderCommunity.
+  if (prevState && prevState.handNumber !== s.handNumber) {
+    _lastRenderedYouKey = null;
+    _lastRenderedYouId  = null;
+    _lastRenderedHand   = -1;
+    _lastRenderedCommunityKey = null;
+    const yc = document.getElementById('you-cards');
+    if (yc) yc.innerHTML = '';
+    const cc = document.getElementById('community-cards');
+    if (cc) cc.innerHTML = '';
+  }
   detectTransitions();
   render();
 });
@@ -808,12 +859,12 @@ function render() {
   $('hand-num').textContent = state.handNumber || '0';
   const blindsChip = $('blinds-chip');
   if (blindsChip) {
-    blindsChip.textContent = `${state.smallBlind || '—'}/${state.bigBlind || '—'}`;
-    blindsChip.title = `Small Blind ${state.smallBlind} · Big Blind ${state.bigBlind}`;
+    blindsChip.textContent = `${chf(state.smallBlind || 0)}/${chf(state.bigBlind || 0)} CHF`;
+    blindsChip.title = `Small Blind ${chf(state.smallBlind)} · Big Blind ${chf(state.bigBlind)} CHF`;
   }
 
-  // Pot (with bump)
-  bumpCounter($('pot-amount'), state.pot || 0);
+  // Pot (with bump) — shown in CHF with 2 decimals
+  bumpCounter($('pot-amount'), chf(state.pot || 0));
 
   // Stage badge
   $('stage-badge').textContent = state.state !== 'WAITING' && state.state !== 'SHOWDOWN'
@@ -832,7 +883,7 @@ function render() {
   // Your seat info
   $('you-name').textContent = (me ? me.name : '—') + (me && me.id === state.hostId ? ' 👑' : '');
   const coinNode = $('you-coins');
-  bumpCounter(coinNode, me ? me.coins : 0);
+  bumpCounter(coinNode, chf(me ? me.coins : 0));
 
   renderYourCards(me);
 
@@ -948,7 +999,7 @@ function renderYourCards(me) {
       tag.style.color = '#ff3d7f';
       yc.appendChild(tag);
     } else if (me.bet > 0) {
-      yc.appendChild(el('div', { class: 'player-bet', text: me.bet }));
+      yc.appendChild(el('div', { class: 'player-bet', text: chf(me.bet) }));
     }
   }
 }
@@ -982,10 +1033,10 @@ function renderSeat(grid, p) {
   }
 
   seat.appendChild(el('div', { class: 'player-name', text: p.name + (p.left ? ' (weg)' : '') + (p.disconnected ? ' 🔌' : '') }));
-  seat.appendChild(el('div', { class: 'player-coins', text: `${p.coins} 💰` }));
+  seat.appendChild(el('div', { class: 'player-coins', text: `${chf(p.coins)} CHF` }));
 
   if (p.bet > 0) {
-    seat.appendChild(el('div', { class: 'player-bet', text: p.bet }));
+    seat.appendChild(el('div', { class: 'player-bet', text: chf(p.bet) }));
   } else if (p.allIn) {
     seat.appendChild(el('div', { class: 'player-action-tag', text: 'ALL-IN' }));
   } else if (p.folded) {
@@ -1064,7 +1115,7 @@ function renderActionPanel(me) {
   }
 
   info.innerHTML = toCall > 0
-    ? `<strong style="color:var(--gold-2)">${toCall}</strong> zu callen · Du bist dran`
+    ? `<strong style="color:var(--gold-2)">${chf(toCall)}</strong> CHF zu callen · Du bist dran`
     : '✨ Du bist dran';
 
   // Fold
@@ -1081,7 +1132,7 @@ function renderActionPanel(me) {
     const canCover = me.coins >= toCall;
     const b = el('button', {
       class: 'btn btn-call',
-      text: canCover ? `Call ${toCall}` : `Call All-In (${me.coins})`,
+      text: canCover ? `Call ${chf(toCall)}` : `Call All-In (${chf(me.coins)})`,
       attrs: { 'data-shortcut': 'C' }
     });
     b.addEventListener('click', () => doAction('call'));
@@ -1099,7 +1150,7 @@ function renderActionPanel(me) {
   } else if (me.coins > 0) {
     const b = el('button', {
       class: 'btn btn-allin',
-      text: `All-In (${me.coins + me.bet})`,
+      text: `All-In (${chf(me.coins + me.bet)})`,
       attrs: { 'data-shortcut': 'A' }
     });
     b.addEventListener('click', () => doAction('allin'));
@@ -1117,11 +1168,12 @@ function openRaise(me) {
   const display = $('raise-display');
   slider.min = minTotal;
   slider.max = maxTotal;
+  slider.step = Math.max(5, Math.round((maxTotal - minTotal) / 200)); // snap to ~5 Rappen steps
   slider.value = minTotal;
   const setVal = (v) => {
     const x = Math.min(maxTotal, Math.max(minTotal, Math.round(Number(v) || minTotal)));
     slider.value = x;
-    display.textContent = x;
+    display.textContent = chf(x);
   };
   setVal(minTotal);
 
@@ -1220,7 +1272,7 @@ function renderShowdown() {
   box.appendChild(el('h3', { text: '🏆 Showdown' }));
   for (const pot of pots) {
     const line = el('div', { class: 'winner-line' });
-    line.innerHTML = `💰 <strong>${pot.amount}</strong> → ${
+    line.innerHTML = `💰 <strong>${chf(pot.amount)} CHF</strong> → ${
       pot.winners.map(w => `<strong>${escapeHtml(w.name)}</strong> <small style="color:var(--text-dim)">(${escapeHtml(w.hand)})</small>`).join(' & ')
     }`;
     box.appendChild(line);
@@ -1249,10 +1301,10 @@ function renderDrawer(me) {
     const row = el('div', { class: 'menu-player-row' });
     const left = el('div');
     left.appendChild(el('div', { class: 'mp-name', text: p.name + (p.id === state.hostId ? ' 👑' : '') + (p.id === state.youId ? ' (du)' : '') + (p.disconnected ? ' 🔌' : '') }));
-    left.appendChild(el('div', { class: 'mp-coins', text: `${p.coins} Coins${p.folded ? ' · gefoldet' : ''}${p.allIn ? ' · all-in' : ''}` }));
+    left.appendChild(el('div', { class: 'mp-coins', text: `${chf(p.coins)} CHF${p.folded ? ' · gefoldet' : ''}${p.allIn ? ' · all-in' : ''}` }));
     row.appendChild(left);
     if (isHost) {
-      const btn = el('button', { class: 'mp-edit', text: 'Coins' });
+      const btn = el('button', { class: 'mp-edit', text: 'CHF' });
       btn.addEventListener('click', () => openCoinModal(p.id, p.name, p.coins));
       row.appendChild(btn);
     }
@@ -1260,8 +1312,8 @@ function renderDrawer(me) {
   }
 
   if (isHost) {
-    if (document.activeElement !== $('host-sb')) $('host-sb').value = state.smallBlind;
-    if (document.activeElement !== $('host-bb')) $('host-bb').value = state.bigBlind;
+    if (document.activeElement !== $('host-sb')) $('host-sb').value = chf(state.smallBlind);
+    if (document.activeElement !== $('host-bb')) $('host-bb').value = chf(state.bigBlind);
   }
 
   const log = $('log-list');

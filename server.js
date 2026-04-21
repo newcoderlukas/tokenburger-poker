@@ -54,6 +54,16 @@ const PORT = process.env.PORT || 3000;
 // Card & Hand Evaluation
 // ============================================================
 
+// ============================================================
+// Money formatting — everything is stored in Rappen (integer cents).
+// ============================================================
+function fmtChf(rappen) {
+  const n = Math.round(Number(rappen) || 0);
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  return sign + (abs / 100).toFixed(2);
+}
+
 const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'];
 const SUITS = ['h', 'd', 'c', 's'];
 
@@ -190,9 +200,11 @@ function createRoom(hostPid, hostSocketId, hostName, config = {}) {
     pot: 0,
     currentBet: 0,
     minRaise: 0,
-    smallBlind: config.smallBlind || 5,
-    bigBlind: config.bigBlind || 10,
-    startCoins: config.startCoins || 200,
+    // Internal unit = Rappen (1 CHF = 100 Rappen). UI handles CHF formatting.
+    // Defaults: 0.20 CHF / 0.40 CHF blinds, 50 CHF buy-in.
+    smallBlind: config.smallBlind || 20,
+    bigBlind: config.bigBlind || 40,
+    startCoins: config.startCoins || 5000,
     customStartCoins: {},
     dealerIdx: -1,
     currentPlayerIdx: -1,
@@ -437,7 +449,7 @@ function startHand(room) {
   const eligible = room.players.filter(p => p.coins > 0 && !p.disconnected);
   if (eligible.length < 2) {
     room.state = 'WAITING';
-    logRoom(room, 'Nicht genug Spieler mit Coins. Host muss Coins verteilen oder auf Reconnect warten.');
+    logRoom(room, 'Nicht genug Spieler mit Guthaben. Host muss Guthaben verteilen oder auf Reconnect warten.');
     broadcastState(room);
     return;
   }
@@ -477,7 +489,7 @@ function startHand(room) {
   room.sbIdx = sbIdx;
   room.bbIdx = bbIdx;
   room.currentBet = room.bigBlind;
-  logRoom(room, `Neue Runde! SB ${room.smallBlind} von ${room.players[sbIdx].name}, BB ${room.bigBlind} von ${room.players[bbIdx].name}.`);
+  logRoom(room, `Neue Runde! SB ${fmtChf(room.smallBlind)} von ${room.players[sbIdx].name}, BB ${fmtChf(room.bigBlind)} von ${room.players[bbIdx].name} (CHF).`);
 
   // Deal 2 hole cards
   for (let i = 0; i < 2; i++) {
@@ -563,7 +575,7 @@ function handleAction(room, pid, action, amount) {
       if (toCall <= 0) return { error: 'Nichts zum Callen - check stattdessen' };
       const paid = takeBet(p, toCall);
       p.hasActed = true;
-      logRoom(room, `${p.name} callt ${paid}.`);
+      logRoom(room, `${p.name} callt ${fmtChf(paid)} CHF.`);
       break;
     }
 
@@ -588,7 +600,7 @@ function handleAction(room, pid, action, amount) {
       for (const o of room.players) {
         if (o !== p && o.inHand && !o.folded && !o.allIn) o.hasActed = false;
       }
-      logRoom(room, `${p.name} ${p.allIn ? 'ist ALL-IN mit' : 'raist auf'} ${p.bet}.`);
+      logRoom(room, `${p.name} ${p.allIn ? 'ist ALL-IN mit' : 'raist auf'} ${fmtChf(p.bet)} CHF.`);
       break;
     }
 
@@ -609,7 +621,7 @@ function handleAction(room, pid, action, amount) {
         room.currentBet = newBet;
       }
       p.hasActed = true;
-      logRoom(room, `${p.name} ist ALL-IN mit ${newBet}!`);
+      logRoom(room, `${p.name} ist ALL-IN mit ${fmtChf(newBet)} CHF!`);
       break;
     }
 
@@ -764,7 +776,7 @@ function showdown(room) {
   };
 
   for (const r of potResults) {
-    logRoom(room, `Pot von ${r.amount}: ${r.winners.map(w => `${w.name} (${w.hand})`).join(', ')}`);
+    logRoom(room, `Pot von ${fmtChf(r.amount)} CHF: ${r.winners.map(w => `${w.name} (${w.hand})`).join(', ')}`);
   }
 
   for (const p of room.players) p.inHand = false;
@@ -780,7 +792,7 @@ function endHandSinglePlayer(room, winner) {
   }
   if (winner) {
     winner.coins += total;
-    logRoom(room, `${winner.name} gewinnt ${total} Coins (alle anderen gefoldet).`);
+    logRoom(room, `${winner.name} gewinnt ${fmtChf(total)} CHF (alle anderen gefoldet).`);
   }
   room.pot = 0;
   room.state = 'SHOWDOWN';
@@ -869,9 +881,12 @@ io.on('connection', (socket) => {
     name = (name || '').trim().substring(0, 20);
     const pid = persistentId || handshakePid || ('s_' + socket.id);
     if (!name) return cb && cb({ error: 'Name fehlt' });
-    const sc = Math.max(10, Math.min(100000, Number(startCoins) || 200));
-    const sb = Math.max(1, Math.min(1000, Number(smallBlind) || 5));
-    const bb = Math.max(sb + 1, Math.min(2000, Number(bigBlind) || sb * 2));
+    // All amounts are handled in Rappen (integer cents). Client converts CHF
+    // decimal input → Rappen before sending. Big enough ceiling for house
+    // games; small enough floor that 1 Rappen = smallest game legal.
+    const sc = Math.max(100, Math.min(1000000, Math.round(Number(startCoins)) || 5000));
+    const sb = Math.max(1, Math.min(100000, Math.round(Number(smallBlind)) || 20));
+    const bb = Math.max(sb + 1, Math.min(200000, Math.round(Number(bigBlind)) || sb * 2));
     const vis = visibility === 'public' ? 'public' : 'private';
     const room = createRoom(pid, socket.id, name, { startCoins: sc, smallBlind: sb, bigBlind: bb, visibility: vis });
     socket.join(room.code);
@@ -969,9 +984,9 @@ io.on('connection', (socket) => {
     }
     const p = room.players.find(pl => pl.id === playerId);
     if (!p) return cb && cb({ error: 'Spieler nicht gefunden' });
-    const amt = Math.max(0, Math.min(1000000, Number(coins) || 0));
+    const amt = Math.max(0, Math.min(10000000, Math.round(Number(coins)) || 0));
     p.coins = amt;
-    logRoom(room, `Host setzt Coins von ${p.name} auf ${amt}.`);
+    logRoom(room, `Host setzt Guthaben von ${p.name} auf ${fmtChf(amt)} CHF.`);
     broadcastState(room);
     if (cb) cb({ ok: true });
   });
@@ -985,9 +1000,9 @@ io.on('connection', (socket) => {
     }
     const p = room.players.find(pl => pl.id === playerId);
     if (!p) return cb && cb({ error: 'Spieler nicht gefunden' });
-    const amt = Math.max(1, Math.min(1000000, Number(amount) || 0));
+    const amt = Math.max(1, Math.min(10000000, Math.round(Number(amount)) || 0));
     p.coins += amt;
-    logRoom(room, `Host gibt ${p.name} ${amt} Coins (neu: ${p.coins}).`);
+    logRoom(room, `Host gibt ${p.name} ${fmtChf(amt)} CHF (neu: ${fmtChf(p.coins)}).`);
     broadcastState(room);
     if (cb) cb({ ok: true });
   });
@@ -999,11 +1014,11 @@ io.on('connection', (socket) => {
     if (room.state !== 'WAITING' && room.state !== 'SHOWDOWN') {
       return cb && cb({ error: 'Nur zwischen Runden möglich' });
     }
-    const sb = Math.max(1, Math.min(1000, Number(smallBlind) || room.smallBlind));
-    const bb = Math.max(sb + 1, Math.min(2000, Number(bigBlind) || sb * 2));
+    const sb = Math.max(1, Math.min(100000, Math.round(Number(smallBlind)) || room.smallBlind));
+    const bb = Math.max(sb + 1, Math.min(200000, Math.round(Number(bigBlind)) || sb * 2));
     room.smallBlind = sb;
     room.bigBlind = bb;
-    logRoom(room, `Host setzt Blinds auf ${sb}/${bb}.`);
+    logRoom(room, `Host setzt Blinds auf ${fmtChf(sb)}/${fmtChf(bb)} CHF.`);
     broadcastState(room);
     if (cb) cb({ ok: true });
   });
